@@ -1,0 +1,73 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch: # ম্যানুয়ালি রান করার জন্য
+
+jobs:
+  build_ios:
+    name: Build Flutter iOS
+    runs-on: macos-latest # iOS বিল্ডের জন্য অবশ্যই macos লাগবে
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 # v4 এ আপডেট করা হয়েছে
+
+      - name: Setup Java
+        uses: actions/setup-java@v4 # v4 এ আপডেট করা হয়েছে
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.24.3' # আপনার প্রোজেক্টের ফ্লাটার ভার্সন অনুযায়ী এটা চেঞ্জ করতে পারেন
+          cache: true
+
+      - name: Get Dependencies
+        run: flutter pub get
+
+      # ---------- Signing Step Start ----------
+      # IPA বানাতে হলে অ্যাপল সার্টিফিকেট এবং প্রভিশনিং প্রোফাইল লাগবেই।
+      # এই ভেরিয়েবলগুলো Github Settings -> Secrets এ অ্যাড করা থাকতে হবে।
+      - name: Import Provisioning Profile & Certificate
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # create variables
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          # import certificate and provisioning profile from secrets
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+
+          # create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # import certificate to keychain
+          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t agg -k $KEYCHAIN_PATH
+          security list-keychains -s $KEYCHAIN_PATH
+          security default-keychain -s $KEYCHAIN_PATH
+
+          # apply provisioning profile
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles
+      # ---------- Signing Step End ----------
+
+      - name: Build IPA
+        # যদি আপনার ExportOptions.plist না থাকে, তাহলে শেষের অংশটুকু (--export-options...) মুছে দিতে পারেন
+        run: flutter build ipa --release --export-options-plist=ios/Runner/ExportOptions.plist
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4 # ফিক্স: v3 থেকে v4 করা হয়েছে
+        with:
+          name: release-ipa
+          path: build/ios/ipa/*.ipa
